@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chatbot IA</title>
+<style>
+  :root{
+    --bg:#eef2f4; --panel:#ffffff; --ink:#17232b; --muted:#5d6e78;
+    --me:#1f5f7a; --me-ink:#ffffff; --bot:#e3eaee; --line:#cfd9df; --err:#b3261e;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#10181d; --panel:#172229; --ink:#e6eef2; --muted:#8fa3ae;
+      --me:#2f86a8; --me-ink:#ffffff; --bot:#22323b; --line:#2b3b45; --err:#ff8a80; }
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    display:flex;justify-content:center}
+  .app{width:100%;max-width:760px;height:100%;display:flex;flex-direction:column;background:var(--panel);
+    padding-top:env(safe-area-inset-top,0px)}
+  header{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}
+  header h1{font-size:1.05rem;margin:0;font-weight:650}
+  #status{font-size:.82rem;color:var(--muted)}
+  #status.err{color:var(--err)}
+  #msgs{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:10px}
+  .m{max-width:85%;padding:10px 14px;border-radius:16px;white-space:pre-wrap;overflow-wrap:anywhere}
+  .m.user{align-self:flex-end;background:var(--me);color:var(--me-ink);border-bottom-right-radius:4px}
+  .m.bot{align-self:flex-start;background:var(--bot);border-bottom-left-radius:4px}
+  .m.error{align-self:center;color:var(--err);background:transparent;font-size:.9rem;text-align:center}
+  .empty{margin:auto;color:var(--muted);text-align:center;max-width:30ch}
+  form{display:flex;gap:8px;padding:12px 14px calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--line)}
+  textarea{flex:1;resize:none;max-height:140px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;
+    background:var(--bg);color:var(--ink);font:inherit}
+  textarea:focus-visible,button:focus-visible{outline:2px solid var(--me);outline-offset:2px}
+  button{padding:0 18px;border:0;border-radius:12px;background:var(--me);color:var(--me-ink);font:inherit;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .ghost{background:transparent;color:var(--muted);border:1px solid var(--line);padding:6px 12px;font-size:.82rem;font-weight:500}
+  header{flex-wrap:wrap}
+  .opts{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:.82rem;color:var(--muted)}
+  .opts label{display:flex;align-items:center;gap:4px;cursor:pointer}
+  .m.hidden-text{cursor:pointer;font-style:italic;color:var(--muted)}
+  .core{flex:0 0 auto;height:clamp(220px,46vh,520px);display:flex;align-items:center;justify-content:center;background:#0c0b09;overflow:hidden}
+  #core{display:block;height:100%;max-width:100%;aspect-ratio:1}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1>Chatbot IA</h1>
+      <div id="status">Conectando ao banco de dados…</div>
+    </div>
+    <div class="opts">
+      <label><input type="checkbox" id="optVoz" checked> Falar</label>
+      <label><input type="checkbox" id="optTexto"> Mostrar texto</label>
+      <button class="ghost" id="stop" type="button">Parar voz</button>
+      <button class="ghost" id="clear" type="button">Nova conversa</button>
+    </div>
+  </header>
+  <div class="core"><canvas id="core" aria-label="Núcleo da Ciel"></canvas></div>
+  <div id="msgs"><div class="empty" id="empty">Escreva uma mensagem para começar a conversa.</div></div>
+  <form id="f">
+    <textarea id="t" rows="1" placeholder="Digite sua mensagem" autocomplete="off"></textarea>
+    <button id="send" type="submit" disabled>Enviar</button>
+  </form>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+/* ===== 1) COLE AQUI o firebaseConfig do seu projeto =====
+   Firebase Console > Configurações do projeto (engrenagem) > Seus apps > App da Web > Configuração */
+const firebaseConfig = {
+  apiKey: "AIzaSyCuZLqQ2ysDXGZKW3cv4vdMMtFlWYsgD-U",
+  authDomain: "ciel-bbb55.firebaseapp.com",
+  projectId: "ciel-bbb55",
+  storageBucket: "ciel-bbb55.firebasestorage.app",
+  messagingSenderId: "833493328724",
+  appId: "1:833493328724:web:b94942b830a06ade1d1ec1"
+};
+
+/* ===== 2) Onde a chave da Groq está guardada no Firestore =====
+   Coleção: config  |  Documento: groq  |  Campo: apiKey (string)
+   Campos opcionais no mesmo documento: model (string), system (string) */
+const COLLECTION = "config";
+const DOCUMENT = "groq";
+
+const DEFAULT_MODEL = "llama-3.3-70b-versatile";
+/* ===== 3) PERSONALIDADE DA IA — EDITE AQUI =====
+   Troque os textos entre aspas. Depois salve o arquivo e envie de novo ao GitHub. */
+const PERSONALIDADE = {
+  // Nome da IA (aparece no título do site e ela usa para se apresentar)
+  nome: "Ciel",
+
+  // Como ela chama VOCÊ em todas as mensagens (ex.: "mestre", "amigo", "chefe", "você")
+  chamarUsuarioDe: "Rimy",
+
+  // Seu nome ou apelido (deixe "" se não quiser que ela use)
+  nomeDoUsuario: "Rimy",
+
+  // Como ela é: temperamento e jeito de ser
+  personalidade: "Sua personalidade sera inteiramente inspirada na CIEL da lightnovel de tensura tensei shitara slime data ken.",
+
+  // Como ela escreve: tom, tamanho das respostas, uso de emojis, gírias
+  jeitoDeFalar: "suas respostas seram simples mas completas ela tambem sera zuera podendo fazer piadas e sendo semelhate a Ciel de tensura.",
+
+  // Regras extras (uma por linha, pode adicionar ou apagar linhas)
+  regras: [
+    "Nunca saia do personagem.",
+    "se ela nunca souber da resposta ela dira que ainda não existe nunhuma informacao em seu nucleo ao envez de mentir.",
+  ]
+};
+
+function montarPrompt(p){
+  const linhas = [
+    "Seu nome é " + p.nome + ".",
+    "Personalidade: " + p.personalidade,
+    "Jeito de falar: " + p.jeitoDeFalar,
+    'Ao se dirigir à pessoa com quem conversa, chame-a sempre de "' + p.chamarUsuarioDe + '".',
+    "Suas respostas serão lidas em voz alta: não use emojis, asteriscos, listas com símbolos nem formatação. Escreva como se estivesse falando."
+  ];
+  if (p.nomeDoUsuario) linhas.push("O nome da pessoa é " + p.nomeDoUsuario + ".");
+  if (p.regras && p.regras.length) linhas.push("Regras:\n- " + p.regras.join("\n- "));
+  return linhas.join("\n");
+}
+
+/* Se existir o campo "system" no Firestore (config/groq), ele substitui a personalidade acima. */
+const DEFAULT_SYSTEM = montarPrompt(PERSONALIDADE);
+document.title = PERSONALIDADE.nome;
+document.querySelector("h1").textContent = PERSONALIDADE.nome;
+
+const $ = id => document.getElementById(id);
+const msgs = $("msgs"), input = $("t"), sendBtn = $("send"), statusEl = $("status");
+let cfg = null;
+let history = [];
+
+/* ===== VOZ (usa a voz do próprio aparelho, grátis e sem configuração) ===== */
+const optVoz = $("optVoz"), optTexto = $("optTexto");
+const canSpeak = "speechSynthesis" in window;
+try{
+  const v = localStorage.getItem("optVoz"), t = localStorage.getItem("optTexto");
+  if (v !== null) optVoz.checked = v === "1";
+  if (t !== null) optTexto.checked = t === "1";
+}catch(e){}
+if (!canSpeak){ optVoz.checked = false; optVoz.disabled = true; optTexto.checked = true; optTexto.disabled = true; }
+function savePrefs(){
+  try{ localStorage.setItem("optVoz", optVoz.checked ? "1" : "0"); localStorage.setItem("optTexto", optTexto.checked ? "1" : "0"); }catch(e){}
+}
+function stopSpeaking(){ speakId++; setCore("idle"); if (canSpeak) speechSynthesis.cancel(); }
+optVoz.addEventListener("change", () => { if (!optVoz.checked) stopSpeaking(); savePrefs(); });
+optTexto.addEventListener("change", savePrefs);
+$("stop").addEventListener("click", stopSpeaking);
+
+let voices = [];
+if (canSpeak){
+  const loadVoices = () => { voices = speechSynthesis.getVoices(); };
+  loadVoices();
+  speechSynthesis.onvoiceschanged = loadVoices;
+}
+function pickVoice(){
+  return voices.find(v => /pt-BR/i.test(v.lang) && /google|natural|luciana|francisca|maria/i.test(v.name))
+      || voices.find(v => /pt-BR/i.test(v.lang))
+      || voices.find(v => /^pt/i.test(v.lang)) || null;
+}
+function cleanForSpeech(t){
+  return t.replace(/```[\s\S]*?```/g, " ").replace(/https?:\/\/\S+/g, " link ")
+          .replace(/[*_#`>~]/g, "").replace(/\s+/g, " ").trim();
+}
+function speak(text){
+  if (!canSpeak || !optVoz.checked) return;
+  speechSynthesis.cancel();
+  const id = ++speakId, voice = pickVoice();
+  const parts = (cleanForSpeech(text).match(/[^.!?\n]+[.!?]*/g) || []).filter(x => x.trim());
+  parts.forEach((p, i) => {
+    const u = new SpeechSynthesisUtterance(p.trim());
+    u.lang = "pt-BR"; if (voice) u.voice = voice;
+    u.onstart = () => { if (id === speakId) setCore("speaking"); };
+    u.onboundary = () => { if (id === speakId) bump(.5); };
+    const done = () => { if (id === speakId && i === parts.length - 1) setCore("idle"); };
+    u.onend = done; u.onerror = done;
+    speechSynthesis.speak(u);
+  });
+  setTimeout(() => { if (id === speakId && core.state === "thinking") setCore("idle"); }, 4000);
+}
+function reactSilent(answer){
+  const id = ++speakId; setCore("speaking");
+  setTimeout(() => { if (id === speakId) setCore("idle"); }, Math.min(6000, 800 + answer.length * 30));
+}
+/* Celulares só liberam o áudio depois de um toque: isso "destrava" a voz ao enviar */
+function unlockSpeech(){
+  if (!canSpeak || !optVoz.checked) return;
+  const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u);
+}
+function showAnswer(bubble, answer){
+  bubble.dataset.full = answer;
+  if (optTexto.checked || !optVoz.checked){ bubble.textContent = answer; return; }
+  bubble.textContent = "🔊 Resposta por voz. Toque aqui para ver o texto.";
+  bubble.classList.add("hidden-text");
+  bubble.onclick = () => { bubble.textContent = bubble.dataset.full; bubble.classList.remove("hidden-text"); bubble.onclick = null; };
+}
+
+/* ===== NÚCLEO DA CIEL: anéis girando; reage ao digitar, pensar e falar ===== */
+const cv = $("core"), cx = cv.getContext("2d");
+let size = 200, dpr = 1, speakId = 0;
+function fit(){ dpr = Math.min(window.devicePixelRatio || 1, 2); size = cv.clientWidth || 200; cv.width = cv.height = Math.round(size * dpr); }
+fit(); window.addEventListener("resize", fit);
+let seed = 11;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const glyphs = Array.from({length: 12}, () => Array.from({length: 3 + Math.floor(rnd() * 2)}, () => [rnd() * 2 - 1, rnd() * 2 - 1]));
+const cities = Array.from({length: 300}, () => ({ lon: rnd() * 6.283, lat: (rnd() - .5) * 2.6, k: rnd() }));
+const core = { state: "idle", speed: 1, pulse: 0, t: 0 };
+const SPEED = { idle: 1, thinking: 6, speaking: 2.4 };
+const CREAM = "233,223,196", INK = "#0c0b09", TAU = 6.2832;
+function setCore(s){ core.state = s; }
+function bump(v){ core.pulse = Math.min(1, core.pulse + v); }
+function band(r0, r1){ cx.beginPath(); cx.arc(0, 0, r1, 0, TAU); cx.arc(0, 0, r0, 0, TAU, true); cx.fill(); }
+function render(){
+  const s = size * dpr, c = s / 2, R = c * .72, t = core.t, p = core.pulse;
+  cx.setTransform(1, 0, 0, 1, c, c); cx.clearRect(-c, -c, s, s); cx.lineCap = "round";
+  for (let i = 0; i < 22; i++){            // fumaça ao redor
+    const a = i / 22 * TAU + Math.sin(t * .4 + i * 1.7) * .18;
+    const len = R * (.10 + .12 * (.5 + .5 * Math.sin(t * .9 + i * 2.3)) + .16 * p), bend = Math.sin(t * .7 + i) * .12;
+    cx.strokeStyle = `rgba(${CREAM},${.10 + .22 * p + .06 * Math.sin(t + i)})`; cx.lineWidth = (2 + i % 3) * dpr;
+    cx.beginPath(); cx.moveTo(Math.cos(a) * R, Math.sin(a) * R);
+    cx.quadraticCurveTo(Math.cos(a + bend) * (R + len * .6), Math.sin(a + bend) * (R + len * .6), Math.cos(a + bend * 1.6) * (R + len), Math.sin(a + bend * 1.6) * (R + len));
+    cx.stroke();
+  }
+  const k = 1 + .035 * p; cx.scale(k, k);
+  cx.globalCompositeOperation = "lighter";   // brilho saindo do núcleo
+  const g = cx.createRadialGradient(0, 0, 0, 0, 0, c);
+  g.addColorStop(0, `rgba(${CREAM},${.10 + .12 * p})`); g.addColorStop(R * .95 / c, `rgba(${CREAM},${.30 + .40 * p})`);
+  g.addColorStop(R * 1.25 / c, `rgba(${CREAM},${.10 + .15 * p})`); g.addColorStop(1, `rgba(${CREAM},0)`);
+  cx.fillStyle = g; cx.beginPath(); cx.arc(0, 0, c, 0, TAU); cx.fill();
+  for (let i = 0; i < 40; i++){
+    const a = i / 40 * TAU + t * .03, r0 = R * .98;
+    const r1 = Math.min(c * .98, R * (1.12 + .35 * (.5 + .5 * Math.sin(t * 1.3 + i * 2.1)) + .4 * p));
+    const rg2 = cx.createLinearGradient(Math.cos(a) * r0, Math.sin(a) * r0, Math.cos(a) * r1, Math.sin(a) * r1);
+    rg2.addColorStop(0, `rgba(${CREAM},${.35 + .5 * p})`); rg2.addColorStop(1, `rgba(${CREAM},0)`);
+    cx.strokeStyle = rg2; cx.lineWidth = (1 + (i % 4) * .8) * dpr;
+    cx.beginPath(); cx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0); cx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); cx.stroke();
+  }
+  cx.globalCompositeOperation = "source-over";
+  cx.fillStyle = INK; band(R * .88, R);   // anel externo com marcações
+  cx.save(); cx.rotate(t * .05); cx.strokeStyle = `rgba(${CREAM},.75)`; cx.lineWidth = dpr;
+  for (let i = 0; i < 120; i++){ cx.rotate(TAU / 120); const L = i % 5 === 0 ? .07 : .035; cx.beginPath(); cx.moveTo(R * .99, 0); cx.lineTo(R * (.99 - L), 0); cx.stroke(); }
+  cx.restore();
+  cx.save(); cx.rotate(-t * .08);          // faixa clara segmentada
+  for (let i = 0; i < 24; i++){
+    cx.fillStyle = (i % 3 === 1 || i % 7 === 0) ? INK : `rgb(${CREAM})`;
+    cx.beginPath(); cx.arc(0, 0, R * .86, i / 24 * TAU, (i + 1) / 24 * TAU - .01); cx.arc(0, 0, R * .70, (i + 1) / 24 * TAU - .01, i / 24 * TAU, true); cx.fill();
+  }
+  cx.restore();
+  cx.fillStyle = INK; band(R * .50, R * .69);   // anel de runas
+  cx.save(); cx.rotate(t * .12); cx.strokeStyle = cx.fillStyle = `rgb(${CREAM})`; cx.lineWidth = 1.6 * dpr; cx.lineJoin = "round";
+  glyphs.forEach((gl, i) => {
+    cx.save(); cx.rotate(i / 12 * TAU); cx.translate(R * .595, 0); const u = R * .06;
+    cx.beginPath(); gl.forEach((q, j) => j ? cx.lineTo(q[0] * u, q[1] * u) : cx.moveTo(q[0] * u, q[1] * u)); cx.stroke();
+    gl.forEach(q => { cx.beginPath(); cx.arc(q[0] * u, q[1] * u, 1.4 * dpr, 0, TAU); cx.fill(); }); cx.restore();
+  });
+  cx.restore();
+  cx.save(); cx.rotate(-t * .2); cx.strokeStyle = `rgba(${CREAM},.55)`; cx.lineWidth = R * .05; cx.setLineDash([1.2 * dpr, 1.6 * dpr]);
+  cx.beginPath(); cx.arc(0, 0, R * .465, 0, TAU); cx.stroke(); cx.restore(); cx.setLineDash([]);
+  const rg = R * .42, gg = cx.createRadialGradient(0, 0, rg * .2, 0, 0, rg);   // globo central
+  gg.addColorStop(0, "#14110d"); gg.addColorStop(.8, "#0a0907"); gg.addColorStop(1, `rgba(${CREAM},${.35 + .4 * p})`);
+  cx.fillStyle = gg; cx.beginPath(); cx.arc(0, 0, rg, 0, TAU); cx.fill();
+  cities.forEach(q => {
+    const lo = q.lon + t * .3, z = Math.cos(q.lat) * Math.cos(lo); if (z <= 0) return;
+    cx.fillStyle = `rgba(255,232,170,${(.25 + .6 * q.k) * (.5 + .5 * z) * (.7 + .6 * p)})`;
+    cx.fillRect(Math.cos(q.lat) * Math.sin(lo) * rg * .94, Math.sin(q.lat) * rg * .94, 1.6 * dpr, 1.6 * dpr);
+  });
+}
+const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? .25 : 1;
+let lastT = performance.now();
+function frame(now){
+  const dt = Math.min((now - lastT) / 1000, .05); lastT = now;
+  core.speed += (SPEED[core.state] * calm - core.speed) * Math.min(1, dt * 3);
+  core.pulse *= Math.pow(.05, dt);
+  if (core.state === "thinking") core.pulse = Math.max(core.pulse, .35 + .15 * Math.sin(now / 180));
+  if (core.state === "speaking") core.pulse = Math.max(core.pulse, .35 + .3 * Math.abs(Math.sin(now / 140)));
+  core.t += dt * core.speed; render(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+function setStatus(text, isErr){ statusEl.textContent = text; statusEl.classList.toggle("err", !!isErr); }
+
+function add(role, text){
+  const e = $("empty"); if (e) e.remove();
+  const d = document.createElement("div");
+  d.className = "m " + role;
+  d.textContent = text;
+  msgs.appendChild(d);
+  msgs.scrollTop = msgs.scrollHeight;
+  return d;
+}
+
+async function loadConfig(){
+  try{
+    const db = getFirestore(initializeApp(firebaseConfig));
+    const snap = await getDoc(doc(db, COLLECTION, DOCUMENT));
+    if (!snap.exists()) throw new Error("Documento " + COLLECTION + "/" + DOCUMENT + " não existe no Firestore.");
+    const data = snap.data();
+    if (!data.apiKey) throw new Error("O documento não tem o campo apiKey.");
+    cfg = { key: data.apiKey, model: data.model || DEFAULT_MODEL, system: data.system || DEFAULT_SYSTEM };
+    setStatus("Pronto · modelo " + cfg.model);
+    sendBtn.disabled = false;
+  }catch(err){
+    console.error(err);
+    const denied = /permission|insufficient/i.test(err.message);
+    setStatus(denied ? "Sem permissão: confira as regras do Firestore." : "Erro: " + err.message, true);
+  }
+}
+
+async function ask(){
+  const text = input.value.trim();
+  if (!text || !cfg) return;
+  unlockSpeech(); setCore("thinking");
+  input.value = ""; input.style.height = "auto";
+  add("user", text);
+  history.push({ role: "user", content: text });
+  sendBtn.disabled = true;
+  const bubble = add("bot", "…");
+  try{
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cfg.key },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages: [{ role: "system", content: cfg.system }, ...history.slice(-20)]
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || ("Erro " + res.status));
+    const answer = data.choices?.[0]?.message?.content || "(sem resposta)";
+    history.push({ role: "assistant", content: answer });
+    showAnswer(bubble, answer);
+    if (canSpeak && optVoz.checked) speak(answer); else reactSilent(answer);
+  }catch(err){
+    bubble.remove(); setCore("idle");
+    history.pop();
+    add("error", "Não foi possível obter a resposta: " + err.message);
+  }finally{
+    sendBtn.disabled = false;
+    msgs.scrollTop = msgs.scrollHeight;
+    input.focus();
+  }
+}
+
+$("f").addEventListener("submit", e => { e.preventDefault(); ask(); });
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); ask(); }
+});
+input.addEventListener("input", () => {
+  bump(.25);
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 140) + "px";
+});
+$("clear").addEventListener("click", () => {
+  stopSpeaking();
+  history = [];
+  msgs.innerHTML = '<div class="empty" id="empty">Escreva uma mensagem para começar a conversa.</div>';
+});
+
+loadConfig();
+</script>
+</body>
+</html>
